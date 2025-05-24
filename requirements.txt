@@ -20,6 +20,7 @@ pandas==2.2.3
 pycparser==2.22
 PySocks==1.7.1
 gunicorn
+cloudscraper
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.0
 pytz==2025.2
