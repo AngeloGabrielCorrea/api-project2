@@ -3,39 +3,51 @@ from bs4 import BeautifulSoup
 import json
 import re
 import time
-import pandas as pd
 import unicodedata
 from datetime import datetime
 
 BASE_URL = "https://animefire.plus/animes-atualizados"
-HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
-# Cria scraper que contorna Cloudflare/WAF
+# Cabeçalhos simulando um navegador real
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                  'Chrome/112.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://animefire.plus/'
+}
+
+# Cria um cloudscraper que mantém sessão e contorna proteções
 scraper = cloudscraper.create_scraper(
-    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
+    delay=10
 )
 
 def gerar_slug(nome):
-    nome = unicodedata.normalize('NFKD', nome).encode('ascii', 'ignore').decode('utf-8')
+    nome = unicodedata.normalize('NFKD', nome).encode('ascii','ignore').decode('utf-8')
     nome = re.sub(r'[^\w\s-]', '', nome.lower())
-    nome = re.sub(r'[-\s]+', '-', nome).strip('-_')
-    return nome
+    return re.sub(r'[-\s]+', '-', nome).strip('-_')
+
+def get(url, **kwargs):
+    """Wrapper para sempre usar nossos HEADERS e cloudscraper."""
+    return scraper.get(url, headers=HEADERS, **kwargs)
 
 def get_video_url(ep_url):
     try:
-        res = scraper.get(ep_url, headers=HEADERS, timeout=10)
+        res = get(ep_url, timeout=10)
+        if res.status_code != 200:
+            return {}
         soup = BeautifulSoup(res.content, "html.parser")
         video_tag = soup.find('video', id='my-video')
         if not video_tag:
             return {}
-
         json_url = video_tag.get('data-video-src')
         if not json_url:
             return {}
 
-        json_data = scraper.get(json_url, headers=HEADERS, timeout=10).json()
+        json_data = get(json_url, timeout=10).json()
         video_options = json_data.get("data", [])
-
         qualidade_links = {}
         for option in video_options:
             label = option.get("label", "").lower()
@@ -46,7 +58,6 @@ def get_video_url(ep_url):
                 qualidade_links["720p"] = src
             elif "1080" in label:
                 qualidade_links["1080p"] = src
-
         return qualidade_links
     except Exception as e:
         print(f"Erro ao extrair vídeo de {ep_url}: {e}")
@@ -54,35 +65,27 @@ def get_video_url(ep_url):
 
 def get_anime_details(anime_url):
     try:
-        response = scraper.get(anime_url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(response.content, "html.parser")
-
+        res = get(anime_url, timeout=15)
+        if res.status_code != 200:
+            print(f"Erro detalhes {anime_url}: status {res.status_code}")
+            return {}
+        soup = BeautifulSoup(res.content, "html.parser")
         def find_info(label):
             tag = soup.find(string=re.compile(label))
             return tag.find_next().text.strip() if tag else ""
-
         nome = soup.find("h1").text.strip() if soup.find("h1") else ""
         sinopse_tag = soup.find("div", class_="divSinopse")
         sinopse = sinopse_tag.text.strip() if sinopse_tag else ""
-
         genero_tags = soup.select('a.spanAnimeInfo.spanGeneros.spanGenerosLink')
-        generos = [tag.text.strip() for tag in genero_tags if not tag['href'].startswith('/top-animes?')]
-
-        trailer_tag = soup.find('div', id='iframe-trailer')
-        trailer_iframe = trailer_tag.find('iframe') if trailer_tag else None
-        trailer_link = trailer_iframe.get('data-src') or trailer_iframe.get('src') if trailer_iframe else ""
-
+        generos = [g.text.strip() for g in genero_tags if not g['href'].startswith('/top-animes?')]
         episodio_tags = soup.select("div.div_video_list a.lEp.epT")
         episodios_links = [a['href'] for a in episodio_tags if a.has_attr('href')]
-
-        print(f"⏳ Extraindo vídeos de {nome}...")
-        episodios_video_urls = []
+        episodios = []
         for link in episodios_links:
-            match = re.search(r'/(\d+)$', link)
-            num_ep = int(match.group(1)) if match else None
-            video_por_qualidade = get_video_url(link)
-            episodios_video_urls.append({"episodio": num_ep, "videos": video_por_qualidade})
-
+            num = None
+            m = re.search(r'/(\d+)$', link)
+            if m: num = int(m.group(1))
+            episodios.append({"episodio": num, "videos": get_video_url(link)})
         return {
             "nome": nome,
             "sinopse": sinopse,
@@ -94,222 +97,178 @@ def get_anime_details(anime_url):
             "status": find_info("Status do Anime:"),
             "dia_lancamento": find_info("Dia de Lançamento:"),
             "ano": find_info("Ano:"),
-            "trailer": trailer_link,
             "link": anime_url,
-            "episodios_links": episodios_video_urls
+            "episodios_links": episodios
         }
     except Exception as e:
         print(f"❌ Erro ao acessar {anime_url}: {e}")
         return {}
 
 def extract_rating_and_class(texto):
-    match = re.search(r'(\d{1,2}\.\d{2})\s+(A\d{2})', texto)
-    if match:
-        return match.group(1), match.group(2)
-    match = re.search(r'N/A\s+(A\d{2})', texto)
-    if match:
-        return "N/A", match.group(1)
+    m = re.search(r'(\d{1,2}\.\d{2})\s+(A\d{2})', texto)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.search(r'N/A\s+(A\d{2})', texto)
+    if m:
+        return "N/A", m.group(1)
     return "", ""
 
 def get_all_animes():
     animes = []
-    links_processados = set()
-
-    for page in range(1, 2):
-        print(f"📄 Lendo página {page}...")
-        url = f"{BASE_URL}/{page}" if page > 1 else BASE_URL
-        try:
-            res = scraper.get(url, headers=HEADERS, timeout=50)
-            soup = BeautifulSoup(res.content, "html.parser")
-
-            for carrossel in soup.select('.owl-carousel'):
-                carrossel.decompose()
-            for bloco in soup.select('.col-12.col-lg-2-5'):
-                bloco.decompose()
-
-            cards = soup.select("div.divCardUltimosEps")
-            for card in cards:
-                a_tag = card.find('a')
-                if not a_tag:
-                    continue
-                link = a_tag.get('href')
-                if not link or link in links_processados:
-                    continue
-
-                links_processados.add(link)
-                nome_completo = a_tag.get('title') or a_tag.text.strip()
-
-                img_tag = card.find('img')
-                if img_tag:
-                    thumbnail = img_tag.get('src') or img_tag.get('data-src') or ""
-                    thumbnail_large = thumbnail.replace('.webp', '-large.webp')
-                else:
-                    thumbnail = thumbnail_large = ""
-
-                rating, classificacao = extract_rating_and_class(nome_completo)
-                detalhes = get_anime_details(link)
-
-                animes.append({
-                    "nome": detalhes.get("nome", nome_completo),
-                    "link": link,
-                    "thumbnail": thumbnail,
-                    "thumbnail-large": thumbnail_large,
-                    "rating": rating,
-                    "classificacao_indicativa": classificacao,
-                    "sinopse": detalhes.get("sinopse"),
-                    "generos": detalhes.get("generos"),
-                    "temporada": detalhes.get("temporada"),
-                    "estudio": detalhes.get("estudio"),
-                    "audio": detalhes.get("audio"),
-                    "episodios": detalhes.get("episodios"),
-                    "status": detalhes.get("status"),
-                    "dia_lancamento": detalhes.get("dia_lancamento"),
-                    "ano": detalhes.get("ano"),
-                    "trailer": detalhes.get("trailer"),
-                    "episodios_links": detalhes.get("episodios_links"),
-                    "slug": gerar_slug(detalhes.get("nome", nome_completo))
-                })
-                print(f"🎮 Adicionado: {animes[-1]['nome']}")
-                time.sleep(0.5)
-        except Exception as e:
-            print(f"❌ Erro na página {page}: {e}")
-            continue
+    seen = set()
+    print("📄 Lendo página 1...")
+    res = get(BASE_URL, timeout=30)
+    if res.status_code != 200:
+        print(f"❌ Falha ao acessar {BASE_URL}: status {res.status_code}")
+        return animes
+    soup = BeautifulSoup(res.content, "html.parser")
+    for sel in ('.owl-carousel', '.col-12.col-lg-2-5'):
+        for el in soup.select(sel):
+            el.decompose()
+    cards = soup.select("div.divCardUltimosEps")
+    for card in cards:
+        a = card.find('a')
+        if not a: continue
+        link = a['href']
+        if link in seen: continue
+        seen.add(link)
+        title = a.get('title') or a.text.strip()
+        img = card.find('img')
+        thumb = img.get('src') or img.get('data-src') if img else ""
+        rating, cls = extract_rating_and_class(title)
+        detalhes = get_anime_details(link)
+        animes.append({
+            "nome": detalhes.get("nome", title),
+            "link": link,
+            "thumbnail": thumb,
+            "rating": rating,
+            "classificacao_indicativa": cls,
+            **detalhes,
+            "slug": gerar_slug(detalhes.get("nome", title))
+        })
+        print(f"🎮 Adicionado: {title}")
+        time.sleep(0.5)
+    print(f"✅ {len(animes)} animes extraídos.")
     return animes
 
 def tempo_decorrido(data_str):
     try:
-        data_postagem = datetime.strptime(data_str, "%Y-%m-%d %H:%M:%S")
-        delta = datetime.now() - data_postagem
-        dias, segundos = delta.days, delta.seconds
-        if dias > 0:
-            return f"há {dias} dia{'s' if dias > 1 else ''}"
-        if segundos >= 3600:
-            return f"há {segundos // 3600} hora{'s' if segundos // 3600 > 1 else ''}"
-        if segundos >= 60:
-            return f"há {segundos // 60} minuto{'s' if segundos // 60 > 1 else ''}"
+        dt = datetime.strptime(data_str, "%Y-%m-%d %H:%M:%S")
+        delta = datetime.now() - dt
+        if delta.days > 0:
+            return f"há {delta.days} dia{'s' if delta.days>1 else ''}"
+        hrs = delta.seconds // 3600
+        if hrs > 0:
+            return f"há {hrs} hora{'s' if hrs>1 else ''}"
+        mins = delta.seconds // 60
+        if mins > 0:
+            return f"há {mins} minuto{'s' if mins>1 else ''}"
         return "há poucos segundos"
     except:
-        return "erro ao calcular tempo"
+        return "erro"
 
-def get_episodios_recentes_home(limite=999999999, max_paginas=1):
+def get_episodios_recentes_home(limite=999999, max_paginas=1):
     episodios = []
-    base_url = "https://animefire.plus/home/{}"
-    pagina = 1
-    try:
-        while len(episodios) < limite and pagina <= max_paginas:
-            url = base_url.format(pagina)
-            res = scraper.get(url, headers=HEADERS, timeout=10)
-            if res.status_code != 200:
-                print(f"Erro ao acessar página {pagina}: status {res.status_code}")
+    page = 1
+    while page <= max_paginas and len(episodios) < limite:
+        url = f"https://animefire.plus/home/{page}"
+        res = get(url, timeout=15)
+        if res.status_code != 200:
+            print(f"Erro ao acessar home/{page}: status {res.status_code}")
+            break
+        soup = BeautifulSoup(res.content, "html.parser")
+        cards = soup.select("div.divCardUltimosEpsHome")
+        if not cards:
+            print(f"Nenhum episódio na página {page}")
+            break
+        for card in cards:
+            if len(episodios) >= limite:
                 break
-            soup = BeautifulSoup(res.content, "html.parser")
-            cards = soup.select("div.divCardUltimosEpsHome")
-            if not cards:
-                print(f"Nenhum episódio encontrado na página {pagina}")
-                break
-            for card in cards:
-                if len(episodios) >= limite:
-                    break
-                a_tag = card.find("a")
-                if not a_tag:
-                    continue
-                link = a_tag.get("href", "")
-                img_tag = a_tag.find("img")
-                thumb = img_tag.get("src") or img_tag.get("data-src") if img_tag else ""
-                titulo = a_tag.get("title") or (a_tag.find("h3", class_="animeTitle").text if a_tag.find("h3", class_="animeTitle") else "")
-                match = re.search(r"(.+?)\s*-\s*Episódio\s*(\d+)", titulo)
-                if not match:
-                    continue
-                nome, numero = match.group(1).strip(), int(match.group(2))
-                slug = gerar_slug(nome)
-                data_span = card.select_one("span.ep-dateModified")
-                postado_ha = tempo_decorrido(data_span["data-date-modified"]) if data_span else "Data não encontrada"
-                episodios.append({
-                    "slug": slug,
-                    "nome": nome,
-                    "thumbnail": thumb,
-                    "episodio": numero,
-                    "postado_ha": postado_ha,
-                    "link": link
-                })
-            pagina += 1
-        print(f"✅ {len(episodios)} episódios recentes extraídos.")
-        return episodios
-    except Exception as e:
-        print(f"❌ Erro ao buscar episódios recentes: {e}")
-        return []
-
-def limpar_nome_anime(nome):
-    return re.sub(r'\s*\d+(\.\d+)?\s*A\d{1,2}$', '', nome).strip()
+            a = card.find("a")
+            if not a: continue
+            link = a.get("href","")
+            img = a.find("img")
+            thumb = img.get("src") or img.get("data-src") if img else ""
+            title = a.get("title") or (a.find("h3",class_="animeTitle").text if a.find("h3",class_="animeTitle") else "")
+            m = re.search(r"(.+?)\s*-\s*Episódio\s*(\d+)", title)
+            if not m: continue
+            nome, num = m.group(1).strip(), int(m.group(2))
+            span = card.select_one("span.ep-dateModified")
+            post = tempo_decorrido(span["data-date-modified"]) if span else "?"
+            episodios.append({
+                "slug": gerar_slug(nome),
+                "nome": nome,
+                "thumbnail": thumb,
+                "episodio": num,
+                "postado_ha": post,
+                "link": link
+            })
+        page += 1
+    print(f"✅ {len(episodios)} episódios recentes extraídos.")
+    return episodios
 
 def get_animes_em_lancamento(limite=9999, max_paginas=10):
     animes = []
-    base_url = "https://animefire.plus/em-lancamento/{}"
-    pagina = 1
-    try:
-        while len(animes) < limite and pagina <= max_paginas:
-            url = base_url.format(pagina)
-            res = scraper.get(url, headers=HEADERS, timeout=10)
-            if res.status_code != 200:
-                print(f"Erro em lançamento página {pagina}: status {res.status_code}")
-                break
-            soup = BeautifulSoup(res.content, "html.parser")
-            cards = soup.select("div.divCardUltimosEps")
-            if not cards:
-                print(f"Nenhum anime em lançamento na página {pagina}")
-                break
-            for card in cards:
-                a_tag = card.find("a")
-                if not a_tag:
-                    continue
-                link = a_tag.get("href", "")
-                titulo = a_tag.get("title") or a_tag.text.strip()
-                titulo_limpo = limpar_nome_anime(titulo)
-                img_tag = a_tag.find("img")
-                thumb = img_tag.get("src") or img_tag.get("data-src") if img_tag else ""
-                slug = gerar_slug(titulo_limpo)
-                animes.append({
-                    "nome": titulo_limpo,
-                    "link": link,
-                    "thumbnail": thumb,
-                    "slug": slug
-                })
-            pagina += 1
-        print(f"✅ {len(animes)} animes em lançamento extraídos.")
-        return animes
-    except Exception as e:
-        print(f"❌ Erro ao buscar animes em lançamento: {e}")
-        return []
+    page = 1
+    while page <= max_paginas and len(animes) < limite:
+        url = f"https://animefire.plus/em-lancamento/{page}"
+        res = get(url, timeout=15)
+        if res.status_code != 200:
+            print(f"Erro em-lancamento/{page}: status {res.status_code}")
+            break
+        soup = BeautifulSoup(res.content, "html.parser")
+        cards = soup.select("div.divCardUltimosEps")
+        if not cards:
+            print(f"Nenhum lançamento na página {page}")
+            break
+        for card in cards:
+            a = card.find("a")
+            if not a: continue
+            link = a.get("href","")
+            title = a.get("title") or a.text.strip()
+            nome = re.sub(r'\s*\d+(\.\d+)?\s*A\d{1,2}$','', title).strip()
+            img = card.find("img")
+            thumb = img.get("src") or img.get("data-src") if img else ""
+            animes.append({
+                "nome": nome,
+                "link": link,
+                "thumbnail": thumb,
+                "slug": gerar_slug(nome)
+            })
+        page += 1
+    print(f"✅ {len(animes)} animes em lançamento extraídos.")
+    return animes
 
 def get_destaques_semana():
     try:
-        res = scraper.get("https://animefire.plus/", headers=HEADERS, timeout=10)
+        res = get("https://animefire.plus/", timeout=15)
+        if res.status_code != 200:
+            print(f"Erro destaques: status {res.status_code}")
+            return []
         soup = BeautifulSoup(res.content, "html.parser")
         carousel = soup.find("div", class_="owl-carousel-l_dia")
         if not carousel:
-            print("❌ Carrossel de destaques não encontrado.")
+            print("❌ Carrossel não encontrado.")
             return []
         destaques = []
-        for artigo in carousel.select("div.divArticleLancamentos"):
-            a_tag = artigo.find("a", class_="item")
-            if not a_tag:
-                continue
-            link = a_tag.get("href", "")
-            img_tag = a_tag.find("img")
-            thumb = img_tag.get("data-src") or img_tag.get("src") if img_tag else ""
-            titulo_tag = a_tag.find("h3", class_="animeTitle")
-            nome = titulo_tag.text.strip() if titulo_tag else ""
-            slug = gerar_slug(nome)
+        for art in carousel.select("div.divArticleLancamentos"):
+            a = art.find("a", class_="item")
+            if not a: continue
+            link = a.get("href","")
+            img = a.find("img")
+            thumb = img.get("data-src") or img.get("src") if img else ""
+            title = a.find("h3", class_="animeTitle")
+            nome = title.text.strip() if title else ""
             destaques.append({
                 "nome": nome,
                 "link": link,
                 "thumbnail": thumb,
-                "slug": slug
+                "slug": gerar_slug(nome)
             })
         print(f"✅ {len(destaques)} destaques da semana extraídos.")
         return destaques
     except Exception as e:
-        print(f"❌ Erro ao buscar destaques da semana: {e}")
+        print(f"❌ Erro destaques: {e}")
         return []
 
 def salvar_destaques_semana():
