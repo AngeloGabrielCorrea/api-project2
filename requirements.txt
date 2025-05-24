@@ -1,0 +1,5 @@
+Flask>=2.0
+APScheduler
+requests
+python-telegram-bot
+gunicorn
