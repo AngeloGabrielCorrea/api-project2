@@ -13,9 +13,9 @@ SCHEDULER_TOKEN = os.getenv("SCHEDULER_TOKEN", "SENHA")
 # 3) Importa funções do scraper
 from scraper import (
     get_all_animes,
-    get_episodios_recentes_home,
-    get_animes_em_lancamento,
-    get_destaques_semana
+    salvar_episodios_recentes_home,
+    salvar_em_lancamento,
+    salvar_destaques_semana
 )
 
 # 4) Endpoint para disparar o scheduler externamente
@@ -24,16 +24,16 @@ def run_scheduler_endpoint():
     token = request.args.get("token", "")
     if token != SCHEDULER_TOKEN:
         abort(401, "Token inválido")
+
     # Executa todo o fluxo de atualização
     todos_animes = get_all_animes()
-    with open("data/anime_detalhes.json", "w", encoding="utf-8") as f:
+    with open("data/todos-animes.json", "w", encoding="utf-8") as f:
         json.dump(todos_animes, f, indent=2, ensure_ascii=False)
-    with open("data/episodios-recentes.json", "w", encoding="utf-8") as f:
-        json.dump(get_episodios_recentes_home(), f, indent=2, ensure_ascii=False)
-    with open("data/em-lancamento.json", "w", encoding="utf-8") as f:
-        json.dump(get_animes_em_lancamento(), f, indent=2, ensure_ascii=False)
-    with open("data/destaques-semana.json", "w", encoding="utf-8") as f:
-        json.dump(get_destaques_semana(), f, indent=2, ensure_ascii=False)
+
+    salvar_episodios_recentes_home()
+    salvar_em_lancamento()
+    salvar_destaques_semana()
+
     return jsonify({"status": "ok"})
 
 # 5) Função de leitura com erro claro se faltar arquivo
@@ -59,7 +59,7 @@ def api_destaques():
 
 @app.route("/api/animes")
 def api_animes():
-    return jsonify(carrega("anime_detalhes"))
+    return jsonify(carrega("todos-animes"))
 
 # 7) Servir front-end estático
 @app.route("/", defaults={"path": "index.html"})
