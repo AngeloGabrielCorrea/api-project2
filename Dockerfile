@@ -28,8 +28,13 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Instala dependências do Python
-RUN pip install --upgrade pip
+# Atualiza pip, setuptools e wheel
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Limpa cache pip para garantir downloads frescos
+RUN pip cache purge
+
+# Instala as dependências do projeto
 RUN pip install -r requirements.txt
 
 # Instala os navegadores do Playwright
