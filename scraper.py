@@ -1,15 +1,15 @@
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 import json
-import re
 import os
 import unicodedata
-from datetime import datetime
 
-# 🚀 Inicia o navegador Playwright com user-agent
+# 🚀 Inicia o navegador Playwright
 playwright = sync_playwright().start()
-browser = playwright.chromium.launch(headless=True)
-context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+browser = playwright.chromium.launch(headless=True)  # Mude para False para ver o navegador
+context = browser.new_context(
+    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+)
 page = context.new_page()
 
 def close_browser():
@@ -18,40 +18,50 @@ def close_browser():
     browser.close()
     playwright.stop()
 
-# 🔧 Função auxiliar para acessar páginas
-def get_html(url):
+# 🔧 Função auxiliar para acessar páginas com timeout maior, captura de screenshot e HTML
+def get_html(url, wait_selector=None):
     try:
         print(f"🌐 Acessando: {url}")
-        page.goto(url, timeout=60000)
-        page.wait_for_load_state("networkidle")  # Espera o JS carregar tudo
-        content = page.content()
+        page.goto(url, timeout=60000, wait_until="networkidle")
 
-        # Verifica se página foi bloqueada
-        if any(palavra in content.lower() for palavra in ["403", "access denied", "cloudflare", "forbidden"]):
-            print(f"⚠️ Possível bloqueio ao acessar {url}")
-            page.screenshot(path="debug.png")  # Opcional: ajuda a ver visualmente
-        return content
+        # Se for passado seletor, aguarda até estar disponível, mas com timeout generoso
+        if wait_selector:
+            page.wait_for_selector(wait_selector, timeout=15000)
+
+        # Espera extra para garantir carregamento de conteúdo dinâmico
+        page.wait_for_timeout(4000)
+
+        # Salva screenshot e html para debug
+        page.screenshot(path="debug.png", full_page=True)
+        html = page.content()
+        with open("debug.html", "w", encoding="utf-8") as f:
+            f.write(html)
+
+        print("📸 Screenshot salva como debug.png")
+        print("📝 HTML salvo como debug.html")
+        return html
     except Exception as e:
-        print(f"❌ Erro ao acessar {url}: {e}")
+        print(f"⚠️ Erro ao acessar {url}: {e}")
+        try:
+            page.screenshot(path="debug.png", full_page=True)
+            print("📸 Screenshot salva como debug.png")
+        except:
+            pass
         return ""
 
 def normalize(text):
     return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('utf-8').lower()
 
-# 🔍 Extrai link direto do vídeo do iframe
 def get_video_url(ep_url):
-    html = get_html(ep_url)
+    html = get_html(ep_url, "iframe")
     soup = BeautifulSoup(html, 'html.parser')
     iframe = soup.find('iframe')
     if iframe:
-        video_url = iframe.get('src')
-        if video_url:
-            return video_url
+        return iframe.get('src')
     return None
 
-# 📄 Extrai detalhes de um anime específico
 def get_anime_details(url):
-    html = get_html(url)
+    html = get_html(url, ".anime__title")
     soup = BeautifulSoup(html, 'html.parser')
 
     nome = soup.select_one('.anime__title')
@@ -72,7 +82,6 @@ def get_anime_details(url):
         link = ep.select_one('a').get('href')
         data = ep.select_one('.episodes__date')
         data = data.text.strip() if data else ""
-
         video_url = get_video_url(link)
         episodios.append({
             "numero": numero,
@@ -89,31 +98,32 @@ def get_anime_details(url):
         "episodios": episodios
     }
 
-# 📦 Coleta todos os animes da listagem
 def get_all_animes(paginas=2):
     animes = []
     for page_num in range(1, paginas + 1):
         url = f"https://animefire.plus/animes?pagina={page_num}"
-        html = get_html(url)
+        html = get_html(url, ".animes__grid .anime-card")
         soup = BeautifulSoup(html, 'html.parser')
         cards = soup.select(".animes__grid .anime-card")
 
         for card in cards:
             link_tag = card.select_one("a")
+            if not link_tag:
+                continue
             link = link_tag.get("href")
-            nome = card.select_one(".anime-card__title").text.strip() if card.select_one(".anime-card__title") else ""
-            imagem = card.select_one("img").get("src") if card.select_one("img") else ""
+            nome_tag = card.select_one(".anime-card__title")
+            nome = nome_tag.text.strip() if nome_tag else ""
+            img_tag = card.select_one("img")
+            imagem = img_tag.get("src") if img_tag else ""
             animes.append({
                 "nome": nome,
                 "link": link,
                 "imagem": imagem
             })
-
     return animes
 
-# 🕒 Coleta episódios recentes da home
 def get_episodios_recentes():
-    html = get_html("https://animefire.plus/")
+    html = get_html("https://animefire.plus/", ".episodes__item")
     soup = BeautifulSoup(html, "html.parser")
 
     lista = []
@@ -132,9 +142,8 @@ def get_episodios_recentes():
         })
     return lista
 
-# 🚀 Coleta animes em lançamento
 def get_em_lancamento():
-    html = get_html("https://animefire.plus/")
+    html = get_html("https://animefire.plus/", ".highlight__slider .highlight__item")
     soup = BeautifulSoup(html, "html.parser")
 
     lista = []
@@ -149,9 +158,8 @@ def get_em_lancamento():
         })
     return lista
 
-# ⭐ Coleta os destaques da semana
 def get_destaques():
-    html = get_html("https://animefire.plus/")
+    html = get_html("https://animefire.plus/", ".highlight__destaque .highlight__item")
     soup = BeautifulSoup(html, "html.parser")
 
     destaques = []
@@ -164,10 +172,9 @@ def get_destaques():
             "link": link,
             "imagem": imagem
         })
-
     return destaques
 
-# 💾 Funções de salvamento
+# 💾 Salvamento
 def salvar_json(dados, caminho):
     os.makedirs(os.path.dirname(caminho), exist_ok=True)
     with open(caminho, "w", encoding="utf-8") as f:
@@ -188,7 +195,7 @@ def salvar_destaques_semana():
     destaques = get_destaques()
     salvar_json(destaques, "data/destaques-semana.json")
 
-# 🚦 Execução principal
+# 🚦 Execução
 if __name__ == "__main__":
     print("🚀 Iniciando extração de dados...")
     try:
