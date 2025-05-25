@@ -4,16 +4,16 @@ import logging
 import json
 import os
 from scraper import (
-    get_episodios_recentes_home,
-    get_animes_em_lancamento,
-    get_destaques_semana,
-    get_all_animes
+    get_all_animes,
+    salvar_episodios_recentes_home,
+    salvar_em_lancamento,
+    salvar_destaques_semana
 )
 from notifier import enviar_telegram, escape_html
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
-ARQUIVO_ANIMES = "data/todos_animes.json"
+ARQUIVO_ANIMES = "data/todos-animes.json"  # corrigido para usar hífen
 
 def carregar_animes_antigos():
     if os.path.exists(ARQUIVO_ANIMES):
@@ -53,8 +53,14 @@ def job_full():
     logging.info("🔄 Iniciando atualização completa...")
     partes = []
 
-    # Novos Animes
     try:
+        # Atualiza os JSONs usando as funções de salvar do scraper
+        salvar_episodios_recentes_home()
+        salvar_em_lancamento()
+        salvar_destaques_semana()
+        logging.info("Arquivos de episódios recentes, em lançamento e destaques salvos.")
+
+        # Atualiza e salva todos os animes
         animes_atual = get_all_animes()
         logging.info(f"Total de animes extraídos: {len(animes_atual)}")
 
@@ -70,36 +76,21 @@ def job_full():
 
         salvar_animes(animes_atual)
 
-    except Exception as e:
-        logging.error("Erro ao obter ou salvar todos os animes", exc_info=e)
-        partes.append("<b>📦 Animes Novos:</b> erro ao extrair.")
+        # Carregar dados para mensagem de Telegram
+        with open("data/episodios-recentes.json", encoding="utf-8") as f:
+            episodios = json.load(f)
+        with open("data/destaques-semana.json", encoding="utf-8") as f:
+            destaques = json.load(f)
+        with open("data/em-lancamento.json", encoding="utf-8") as f:
+            lancamentos = json.load(f)
 
-    # Episódios Recentes
-    try:
-        recentes = get_episodios_recentes_home()
-        logging.info(f"Episódios recentes: {len(recentes)}")
-        partes.append(formatar_bloco_episodios(recentes))
-    except Exception as e:
-        logging.error("Erro em episódios recentes", exc_info=e)
-        partes.append("<b>📺 Episódios Recentes:</b> erro ao extrair.")
-
-    # Destaques da Semana
-    try:
-        destaques = get_destaques_semana()
-        logging.info(f"Destaques da semana: {len(destaques)}")
+        partes.append(formatar_bloco_episodios(episodios))
         partes.append(formatar_bloco_destaques(destaques))
-    except Exception as e:
-        logging.error("Erro em destaques da semana", exc_info=e)
-        partes.append("<b>🔥 Destaques da Semana:</b> erro ao extrair.")
-
-    # Em Lançamento
-    try:
-        lancamentos = get_animes_em_lancamento()
-        logging.info(f"Animes em lançamento: {len(lancamentos)}")
         partes.append(formatar_bloco_lancamentos(lancamentos))
+
     except Exception as e:
-        logging.error("Erro em em_lancamento", exc_info=e)
-        partes.append("<b>🚀 Em Lançamento:</b> erro ao extrair.")
+        logging.error("Erro na atualização completa", exc_info=e)
+        partes.append("<b>❌ Erro durante a atualização completa.</b>")
 
     mensagem = "<b>✅ Atualização concluída com sucesso!</b>\n\n" + "\n\n".join(partes)
     enviar_telegram(mensagem)
@@ -107,7 +98,7 @@ def job_full():
 if __name__ == "__main__":
     schedule.every(1).minutes.do(job_full)
     logging.info("🤖 Scheduler iniciado.")
-    job_full()  # Executa imediatamente
+    job_full()  # executa imediatamente
 
     while True:
         schedule.run_pending()
