@@ -6,240 +6,172 @@ import os
 import unicodedata
 from datetime import datetime
 
-# 🚀 Inicia o navegador Playwright
+# 🚀 Inicia o navegador Playwright com user-agent
 playwright = sync_playwright().start()
 browser = playwright.chromium.launch(headless=True)
-context = browser.new_context()
+context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 page = context.new_page()
 
 def close_browser():
-    print("🛑 Fechando navegador Playwright...")
-    try:
-        page.close()
-        context.close()
-        browser.close()
-        playwright.stop()
-    except Exception as e:
-        print(f"❌ Erro ao fechar navegador: {e}")
+    page.close()
+    context.close()
+    browser.close()
+    playwright.stop()
 
 # 🔧 Função auxiliar para acessar páginas
 def get_html(url):
     try:
-        print(f"🌐 Acessando URL: {url}")
+        print(f"🌐 Acessando: {url}")
         page.goto(url, timeout=60000)
-        html = page.content()
-        print(f"✅ Conteúdo obtido de {url} (tamanho {len(html)} caracteres)")
-        return html
+        page.wait_for_load_state("networkidle")  # Espera o JS carregar tudo
+        content = page.content()
+
+        # Verifica se página foi bloqueada
+        if any(palavra in content.lower() for palavra in ["403", "access denied", "cloudflare", "forbidden"]):
+            print(f"⚠️ Possível bloqueio ao acessar {url}")
+            page.screenshot(path="debug.png")  # Opcional: ajuda a ver visualmente
+        return content
     except Exception as e:
         print(f"❌ Erro ao acessar {url}: {e}")
         return ""
 
 def normalize(text):
-    try:
-        return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('utf-8').lower()
-    except Exception as e:
-        print(f"❌ Erro na normalização do texto: {e}")
-        return text
+    return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 # 🔍 Extrai link direto do vídeo do iframe
 def get_video_url(ep_url):
-    try:
-        html = get_html(ep_url)
-        if not html:
-            print(f"⚠️ HTML vazio ao tentar extrair vídeo em {ep_url}")
-            return None
-        soup = BeautifulSoup(html, 'html.parser')
-        iframe = soup.find('iframe')
-        if iframe:
-            video_url = iframe.get('src')
-            print(f"🎬 Vídeo encontrado em {ep_url}: {video_url}")
+    html = get_html(ep_url)
+    soup = BeautifulSoup(html, 'html.parser')
+    iframe = soup.find('iframe')
+    if iframe:
+        video_url = iframe.get('src')
+        if video_url:
             return video_url
-        else:
-            print(f"⚠️ Iframe não encontrado em {ep_url}")
-            return None
-    except Exception as e:
-        print(f"❌ Erro ao extrair vídeo de {ep_url}: {e}")
-        return None
+    return None
 
 # 📄 Extrai detalhes de um anime específico
 def get_anime_details(url):
-    try:
-        html = get_html(url)
-        if not html:
-            print(f"⚠️ HTML vazio para detalhes do anime em {url}")
-            return {}
+    html = get_html(url)
+    soup = BeautifulSoup(html, 'html.parser')
 
-        soup = BeautifulSoup(html, 'html.parser')
+    nome = soup.select_one('.anime__title')
+    nome = nome.text.strip() if nome else ""
 
-        nome = soup.select_one('.anime__title')
-        nome = nome.text.strip() if nome else ""
+    capa = soup.select_one('.anime__poster img')
+    capa_url = capa.get('src') if capa else ""
 
-        capa = soup.select_one('.anime__poster img')
-        capa_url = capa.get('src') if capa else ""
+    descricao = soup.select_one('.anime__description')
+    descricao = descricao.text.strip() if descricao else ""
 
-        descricao = soup.select_one('.anime__description')
-        descricao = descricao.text.strip() if descricao else ""
+    generos = [g.text.strip() for g in soup.select('.anime__genres a')]
 
-        generos = [g.text.strip() for g in soup.select('.anime__genres a')]
+    episodios = []
+    ep_items = soup.select('.episodes__list .episodes__item')
+    for ep in ep_items:
+        numero = ep.select_one('.episodes__number').text.strip()
+        link = ep.select_one('a').get('href')
+        data = ep.select_one('.episodes__date')
+        data = data.text.strip() if data else ""
 
-        episodios = []
-        ep_items = soup.select('.episodes__list .episodes__item')
-        for ep in ep_items:
-            numero = ep.select_one('.episodes__number').text.strip()
-            link = ep.select_one('a').get('href')
-            data = ep.select_one('.episodes__date')
-            data = data.text.strip() if data else ""
+        video_url = get_video_url(link)
+        episodios.append({
+            "numero": numero,
+            "url": link,
+            "data": data,
+            "video": video_url
+        })
 
-            video_url = get_video_url(link)
-            episodios.append({
-                "numero": numero,
-                "url": link,
-                "data": data,
-                "video": video_url
-            })
-
-        print(f"✅ Detalhes extraídos do anime: {nome} ({len(episodios)} episódios)")
-        return {
-            "nome": nome,
-            "descricao": descricao,
-            "generos": generos,
-            "capa": capa_url,
-            "episodios": episodios
-        }
-    except Exception as e:
-        print(f"❌ Erro ao extrair detalhes do anime em {url}: {e}")
-        return {}
+    return {
+        "nome": nome,
+        "descricao": descricao,
+        "generos": generos,
+        "capa": capa_url,
+        "episodios": episodios
+    }
 
 # 📦 Coleta todos os animes da listagem
 def get_all_animes(paginas=2):
     animes = []
-    try:
-        for page_num in range(1, paginas + 1):
-            url = f"https://animefire.plus/animes?pagina={page_num}"
-            html = get_html(url)
-            if not html:
-                print(f"⚠️ HTML vazio na página {page_num}")
-                continue
-            soup = BeautifulSoup(html, 'html.parser')
-            cards = soup.select(".animes__grid .anime-card")
+    for page_num in range(1, paginas + 1):
+        url = f"https://animefire.plus/animes?pagina={page_num}"
+        html = get_html(url)
+        soup = BeautifulSoup(html, 'html.parser')
+        cards = soup.select(".animes__grid .anime-card")
 
-            print(f"🗂️ Página {page_num}: encontrados {len(cards)} animes")
+        for card in cards:
+            link_tag = card.select_one("a")
+            link = link_tag.get("href")
+            nome = card.select_one(".anime-card__title").text.strip() if card.select_one(".anime-card__title") else ""
+            imagem = card.select_one("img").get("src") if card.select_one("img") else ""
+            animes.append({
+                "nome": nome,
+                "link": link,
+                "imagem": imagem
+            })
 
-            for card in cards:
-                link_tag = card.select_one("a")
-                link = link_tag.get("href") if link_tag else None
-                nome = card.select_one(".anime-card__title").text.strip() if card.select_one(".anime-card__title") else ""
-                imagem = card.select_one("img").get("src") if card.select_one("img") else ""
-                if link and nome:
-                    animes.append({
-                        "nome": nome,
-                        "link": link,
-                        "imagem": imagem
-                    })
-    except Exception as e:
-        print(f"❌ Erro ao coletar todos os animes: {e}")
-
-    print(f"✅ Total de animes coletados: {len(animes)}")
     return animes
 
 # 🕒 Coleta episódios recentes da home
 def get_episodios_recentes():
-    try:
-        html = get_html("https://animefire.plus/")
-        if not html:
-            print("⚠️ HTML vazio na página inicial para episódios recentes")
-            return []
+    html = get_html("https://animefire.plus/")
+    soup = BeautifulSoup(html, "html.parser")
 
-        soup = BeautifulSoup(html, "html.parser")
-
-        lista = []
-        items = soup.select(".episodes__item")
-        print(f"🕒 Episódios recentes encontrados: {len(items)}")
-
-        for item in items:
-            nome = item.select_one(".episodes__title").text.strip()
-            link = item.select_one("a").get("href")
-            episodio = item.select_one(".episodes__number").text.strip()
-            imagem = item.select_one("img").get("src")
-            video = get_video_url(link)
-            lista.append({
-                "nome": nome,
-                "episodio": episodio,
-                "link": link,
-                "imagem": imagem,
-                "video": video
-            })
-        return lista
-    except Exception as e:
-        print(f"❌ Erro ao coletar episódios recentes: {e}")
-        return []
+    lista = []
+    for item in soup.select(".episodes__item"):
+        nome = item.select_one(".episodes__title").text.strip()
+        link = item.select_one("a").get("href")
+        episodio = item.select_one(".episodes__number").text.strip()
+        imagem = item.select_one("img").get("src")
+        video = get_video_url(link)
+        lista.append({
+            "nome": nome,
+            "episodio": episodio,
+            "link": link,
+            "imagem": imagem,
+            "video": video
+        })
+    return lista
 
 # 🚀 Coleta animes em lançamento
 def get_em_lancamento():
-    try:
-        html = get_html("https://animefire.plus/")
-        if not html:
-            print("⚠️ HTML vazio na página inicial para animes em lançamento")
-            return []
+    html = get_html("https://animefire.plus/")
+    soup = BeautifulSoup(html, "html.parser")
 
-        soup = BeautifulSoup(html, "html.parser")
-
-        lista = []
-        items = soup.select(".highlight__slider .highlight__item")
-        print(f"🚀 Animes em lançamento encontrados: {len(items)}")
-
-        for item in items:
-            nome = item.select_one(".highlight__title").text.strip()
-            link = item.select_one("a").get("href")
-            imagem = item.select_one("img").get("src")
-            lista.append({
-                "nome": nome,
-                "link": link,
-                "imagem": imagem
-            })
-        return lista
-    except Exception as e:
-        print(f"❌ Erro ao coletar animes em lançamento: {e}")
-        return []
+    lista = []
+    for item in soup.select(".highlight__slider .highlight__item"):
+        nome = item.select_one(".highlight__title").text.strip()
+        link = item.select_one("a").get("href")
+        imagem = item.select_one("img").get("src")
+        lista.append({
+            "nome": nome,
+            "link": link,
+            "imagem": imagem
+        })
+    return lista
 
 # ⭐ Coleta os destaques da semana
 def get_destaques():
-    try:
-        html = get_html("https://animefire.plus/")
-        if not html:
-            print("⚠️ HTML vazio na página inicial para destaques da semana")
-            return []
+    html = get_html("https://animefire.plus/")
+    soup = BeautifulSoup(html, "html.parser")
 
-        soup = BeautifulSoup(html, "html.parser")
+    destaques = []
+    for item in soup.select(".highlight__destaque .highlight__item"):
+        nome = item.select_one(".highlight__title").text.strip()
+        link = item.select_one("a").get("href")
+        imagem = item.select_one("img").get("src")
+        destaques.append({
+            "nome": nome,
+            "link": link,
+            "imagem": imagem
+        })
 
-        destaques = []
-        items = soup.select(".highlight__destaque .highlight__item")
-        print(f"⭐ Destaques da semana encontrados: {len(items)}")
-
-        for item in items:
-            nome = item.select_one(".highlight__title").text.strip()
-            link = item.select_one("a").get("href")
-            imagem = item.select_one("img").get("src")
-            destaques.append({
-                "nome": nome,
-                "link": link,
-                "imagem": imagem
-            })
-
-        return destaques
-    except Exception as e:
-        print(f"❌ Erro ao coletar destaques da semana: {e}")
-        return []
+    return destaques
 
 # 💾 Funções de salvamento
 def salvar_json(dados, caminho):
-    try:
-        os.makedirs(os.path.dirname(caminho), exist_ok=True)
-        with open(caminho, "w", encoding="utf-8") as f:
-            json.dump(dados, f, ensure_ascii=False, indent=2)
-        print(f"💾 Dados salvos em {caminho} ({len(dados)} itens)")
-    except Exception as e:
-        print(f"❌ Erro ao salvar JSON em {caminho}: {e}")
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(dados, f, ensure_ascii=False, indent=2)
 
 def salvar_episodios_recentes_home():
     print("🔄 Salvando episódios recentes...")
@@ -268,7 +200,5 @@ if __name__ == "__main__":
         salvar_destaques_semana()
 
         print("\n✅ Concluído com sucesso!")
-    except Exception as e:
-        print(f"❌ Erro geral na extração de dados: {e}")
     finally:
         close_browser()
