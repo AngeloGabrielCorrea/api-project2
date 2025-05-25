@@ -4,7 +4,7 @@ import requests
 import time
 import os
 
-TELEGRAM_TOKEN = "TOKEN_AQUI"
+TELEGRAM_TOKEN = "7729721572:AAGn_ASg3WXEAfPG9_1U1gTCQCwihcayc98"
 CHAT_ID = "-1002593094484"
 
 ARQ_TODOS_ANIMES = "data/todos-animes.json"
